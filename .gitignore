@@ -1,0 +1,5 @@
+build/
+*.npse
+mirror.db
+mirror.db-wal
+mirror.db-shm
