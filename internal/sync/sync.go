@@ -261,8 +261,10 @@ func (s *Syncer) syncLoosePages(ctx context.Context, full bool) (seen, changed i
 		if page.LastEditedTime > newest {
 			newest = page.LastEditedTime
 		}
-		// Rows of a data source are handled by the query endpoint.
-		if page.Parent.Type == "data_source" || page.Parent.Type == "database_id" {
+		// Rows of a data source are handled by the query endpoint. Search
+		// returns them too, and mirroring one here would store it without its
+		// data source, which is what every collection:// view joins on.
+		if page.Parent.IsDatabaseRow() {
 			return true
 		}
 		seen++
@@ -446,13 +448,7 @@ func (s *Syncer) ResyncPage(ctx context.Context, pageID string) error {
 	if err != nil {
 		return err
 	}
-	dataSourceID := ""
-	if page.Parent.Type == "data_source" {
-		dataSourceID = page.Parent.DataSourceID
-	} else if page.Parent.DatabaseID != "" {
-		dataSourceID = page.Parent.DatabaseID
-	}
-	if _, err := s.db.UpsertPage(ctx, page, dataSourceID); err != nil {
+	if _, err := s.db.UpsertPage(ctx, page, page.Parent.RowDataSource()); err != nil {
 		return err
 	}
 	return s.FetchContent(ctx, page.ID)

@@ -36,7 +36,7 @@ func row(id, title, edited string, extra string) json.RawMessage {
 		"object":"page","id":%q,"created_time":"2026-09-01T00:00:00.000Z",
 		"last_edited_time":%q,"archived":false,"in_trash":false,
 		"url":"https://app.notion.com/p/%s",
-		"parent":{"type":"data_source","data_source_id":"ds-facts"},
+		"parent":{"type":"data_source_id","data_source_id":"ds-facts"},
 		"properties":{%s}}`, id, edited, id, props))
 }
 
@@ -59,12 +59,17 @@ func (f *fakeNotion) handler() http.Handler {
 				"properties":{"Утверждение":{"type":"title"},"Доверие":{"type":"select"},
 				              "День":{"type":"relation"},"Замечено":{"type":"date"}}}`)})
 		case "page":
+			// Search returns database rows alongside loose pages, and their
+			// parent carries no data source of its own beyond the id. The
+			// syncer has to recognise and skip them: mirroring a row from here
+			// would store it without its data source.
 			writeList(w, []json.RawMessage{json.RawMessage(`{
 				"object":"page","id":"loose-1","created_time":"2026-08-01T00:00:00.000Z",
 				"last_edited_time":"2026-09-10T00:00:00.000Z","archived":false,"in_trash":false,
 				"url":"https://app.notion.com/p/loose-1",
 				"parent":{"type":"page_id","page_id":"root"},
-				"properties":{"title":{"type":"title","title":[{"type":"text","plain_text":"Регламент проекта","annotations":{}}]}}}`)})
+				"properties":{"title":{"type":"title","title":[{"type":"text","plain_text":"Регламент проекта","annotations":{}}]}}}`),
+				f.rows["fact-1"]})
 		default:
 			writeList(w, nil)
 		}
@@ -206,6 +211,48 @@ func TestBootstrapMirrorsSchemaRowsAndContent(t *testing.T) {
 	}
 	if to != "loose-1" {
 		t.Fatalf("edge target = %q", to)
+	}
+}
+
+// TestSearchDoesNotStripDataSourceFromRows guards the invariant every
+// collection:// view depends on: a database row keeps its data source no matter
+// which endpoint mirrored it last. Search returns rows as well as loose pages,
+// and their parent type is "data_source_id" in API 2025-09-03 (it was
+// "database_id" in 2022-06-28) — matching that string instead of the ids is how
+// every row in this workspace lost its data source and every view came back
+// empty while search and fetch kept working.
+func TestSearchDoesNotStripDataSourceFromRows(t *testing.T) {
+	ctx := context.Background()
+	f := baseFake()
+	s, db, _ := newSyncer(t, f)
+
+	if _, err := s.Discover(ctx); err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	// Two passes: the second one runs the search walk again over rows the
+	// data source pass has already mirrored.
+	for i := 0; i < 2; i++ {
+		if _, err := s.Pass(ctx, true); err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+	}
+
+	var dataSource string
+	if err := db.SQL().QueryRowContext(ctx,
+		`SELECT data_source_id FROM pages WHERE id='fact-1'`).Scan(&dataSource); err != nil {
+		t.Fatal(err)
+	}
+	if dataSource != "ds-facts" {
+		t.Fatalf("row lost its data source: %q", dataSource)
+	}
+
+	var rows int
+	if err := db.SQL().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM "collection://ds-facts"`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows == 0 {
+		t.Fatal("collection view is empty after a search pass")
 	}
 }
 

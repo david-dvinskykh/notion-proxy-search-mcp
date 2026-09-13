@@ -35,6 +35,24 @@ type Parent struct {
 	Workspace    bool   `json:"workspace"`
 }
 
+// IsDatabaseRow reports whether the object is a row of a database rather than a
+// standalone page. The type string is deliberately not consulted: it is
+// "database_id" in API 2022-06-28 and "data_source_id" in 2025-09-03, and a
+// mismatch there silently turns every row into a loose page.
+func (p Parent) IsDatabaseRow() bool {
+	return p.DataSourceID != "" || p.DatabaseID != ""
+}
+
+// RowDataSource returns the data source a row belongs to, preferring the data
+// source id and falling back to the database id for older payloads. It is empty
+// for anything that is not a database row.
+func (p Parent) RowDataSource() string {
+	if p.DataSourceID != "" {
+		return p.DataSourceID
+	}
+	return p.DatabaseID
+}
+
 // ID returns the parent's identifier regardless of its type.
 func (p Parent) ParentID() string {
 	switch {

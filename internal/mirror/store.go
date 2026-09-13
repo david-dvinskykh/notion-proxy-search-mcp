@@ -172,7 +172,11 @@ func (d *DB) UpsertPage(ctx context.Context, p *notion.Page, dataSourceID string
 		INSERT INTO pages(id,object,data_source_id,parent_id,parent_type,title,url,icon,
 		                  created_time,last_edited_time,archived,in_trash,properties,synced_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(id) DO UPDATE SET object=excluded.object, data_source_id=excluded.data_source_id,
+		ON CONFLICT(id) DO UPDATE SET object=excluded.object,
+		  -- A page can arrive from the search endpoint with no data source
+		  -- attached. Keeping the known one matters: every collection:// view
+		  -- joins on it, so clearing it empties the view for that row.
+		  data_source_id=CASE WHEN excluded.data_source_id <> '' THEN excluded.data_source_id ELSE pages.data_source_id END,
 		  parent_id=excluded.parent_id, parent_type=excluded.parent_type, title=excluded.title,
 		  url=excluded.url, icon=excluded.icon, created_time=excluded.created_time,
 		  last_edited_time=excluded.last_edited_time, archived=excluded.archived,
