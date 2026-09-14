@@ -68,28 +68,35 @@ const rrfK = 60.0
 // vector hit at rank three (1/63), so the weaker branch was dragging the
 // stronger one down.
 //
-// Keyword is kept at a lower weight rather than dropped because it answers what
-// embeddings cannot: exact identifiers, numbers, file names, environment
-// variables. TestRetrievalQualityOnCorpus measures both kinds of question, and
-// these numbers are the output of that loop — re-run it before changing them.
+// Keyword is kept rather than dropped because it answers what embeddings
+// cannot: exact identifiers, numbers, file names, environment variables. That
+// is not a hunch either — see the identifier column below, where taking the
+// weight to zero costs a question and 0.11 of MRR.
 //
-// The sweep over 49 questions (37 natural-language, 12 literal identifiers):
+// The weight is 0.20 because the live mirror says so. The first sweep ran on
+// the 45-document corpus and chose 0.35 off a flat 0.15-0.35 plateau, taking
+// the upper end on the argument that a larger corpus would need more help
+// promoting literals. The larger corpus arrived — 6 500 chunks of the real
+// workspace — and says the opposite: the plateau moved down, and 0.35 now sits
+// just past its edge. 27 questions, 20 natural-language and 7 literal
+// identifiers whose answer page is unique in the mirror:
 //
-//	weight  hit@1  hit@3   identifier lookups
-//	0.15     86 %  100 %   12/12
-//	0.35     86 %   98 %   12/12
-//	0.60     84 %   96 %   12/12
-//	1.00     84 %   96 %   12/12
+//	w_kw   all hit@1  all MRR   natural MRR   identifier hit@1  identifier MRR
+//	0.00     17/27     0.780       0.793           4/7              0.743
+//	0.15     18/27     0.805       0.787           5/7              0.857
+//	0.20     18/27     0.803       0.784           5/7              0.857
+//	0.35     17/27     0.783       0.757           5/7              0.857
+//	1.00     17/27     0.757       0.698           6/7              0.929
 //
-// The plateau is flat between 0.15 and 0.35 — one question of hit@3 is inside
-// the noise of a set this size — so the upper end is taken deliberately. A
-// 45-document corpus cannot show the failure mode that argues for it: with
-// hundreds of facts competing, a literal identifier can sit deep in the vector
-// ranking while being the keyword branch's obvious first hit, and at 0.15 the
-// keyword branch can no longer promote anything the vector branch ranked badly.
+// Identifier lookups are flat from 0.10 to 0.50, so the choice inside the
+// plateau is decided by the natural-language half, which keeps losing ground as
+// the weight rises. 0.20 is the top of the plateau: the most help the keyword
+// branch can give a literal before it starts demoting correct vector hits.
+// Re-run the sweep before changing this; it is offline arithmetic over the two
+// branch rankings and needs no rebuild.
 const (
 	weightVector  = 1.0
-	weightKeyword = 0.35
+	weightKeyword = 0.20
 )
 
 // Candidate pool sizing. Both branches hand fusion a list of pages, so the
