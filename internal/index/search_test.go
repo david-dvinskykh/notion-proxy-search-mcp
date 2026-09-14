@@ -197,6 +197,34 @@ func TestHybridBeatsEitherBranchAlone(t *testing.T) {
 	}
 }
 
+// TestLongPageDoesNotOutrankBetterShortOne pins the counting rule of the
+// fusion: a page scores from its best rank in each branch, once. Summing every
+// chunk instead ranks by page length, since a reference page contributes one
+// term per chunk. Here the long page is worse in both branches at every rank
+// and must still lose — on the live workspace it did not, and a one-sentence
+// fact standing first by cosine came back below a page whose best chunk was
+// fifteenth.
+func TestLongPageDoesNotOutrankBetterShortOne(t *testing.T) {
+	short := []hit{{pageID: "fact", chunkID: 1, rank: 1, score: 0.86}}
+	long := make([]hit, 0, 40)
+	for i := 0; i < 40; i++ {
+		long = append(long, hit{pageID: "manual", chunkID: int64(100 + i), rank: 2 + i, score: 0.80})
+	}
+
+	out := fuse(nil, append(short, long...))
+	byPage := map[string]fusedHit{}
+	for _, f := range out {
+		byPage[f.pageID] = f
+	}
+	if byPage["fact"].score <= byPage["manual"].score {
+		t.Fatalf("40 mediocre chunks outscored the top hit: fact %.5f, manual %.5f",
+			byPage["fact"].score, byPage["manual"].score)
+	}
+	if byPage["manual"].vecRank != 2 {
+		t.Fatalf("long page kept rank %d instead of its best", byPage["manual"].vecRank)
+	}
+}
+
 func TestSearchFiltersByDataSource(t *testing.T) {
 	f := newFixture(t, conceptEmbedder{})
 	seedFacts(t, f)

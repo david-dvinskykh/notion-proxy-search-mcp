@@ -167,6 +167,13 @@ type fusedHit struct {
 
 // fuse combines branch rankings with reciprocal rank fusion, keeping the best
 // chunk per page so one long page cannot fill the whole answer.
+//
+// Each branch contributes exactly once per page, from that page's best rank in
+// it. Summing every chunk instead would rank by chunk count: a 770-chunk
+// reference page collects dozens of mediocre hits and beats the one-sentence
+// fact that actually answers the question and stands first in the branch. That
+// is not hypothetical — it is what the mirror did on this workspace, where a
+// fact with vector rank 1 came back below a page whose best chunk was rank 15.
 func fuse(keyword, vector []hit) []fusedHit {
 	byPage := map[string]*fusedHit{}
 	order := []string{}
@@ -178,11 +185,6 @@ func fuse(keyword, vector []hit) []fusedHit {
 				byPage[h.pageID] = f
 				order = append(order, h.pageID)
 			}
-			weight := weightKeyword
-			if isVector {
-				weight = weightVector
-			}
-			f.score += weight / (rrfK + float64(h.rank))
 			if isVector {
 				if f.vecRank == 0 || h.rank < f.vecRank {
 					f.vecRank, f.vector = h.rank, h.score
@@ -203,7 +205,15 @@ func fuse(keyword, vector []hit) []fusedHit {
 
 	out := make([]fusedHit, 0, len(order))
 	for _, id := range order {
-		out = append(out, *byPage[id])
+		f := *byPage[id]
+		f.score = 0
+		if f.vecRank > 0 {
+			f.score += weightVector / (rrfK + float64(f.vecRank))
+		}
+		if f.keywordRank > 0 {
+			f.score += weightKeyword / (rrfK + float64(f.keywordRank))
+		}
+		out = append(out, f)
 	}
 	return out
 }
