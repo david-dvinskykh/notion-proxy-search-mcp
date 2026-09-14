@@ -142,7 +142,17 @@ CREATE TABLE IF NOT EXISTS sync_log (
 // Open opens or creates the mirror database at path.
 func Open(ctx context.Context, path string) (*DB, error) {
 	// _time_format keeps timestamps as the ISO strings Notion returns.
-	dsn := path + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_time_format=sqlite"
+	//
+	// _txlock=immediate makes every read-write transaction take the write lock
+	// when it begins instead of when it first writes. Without it a transaction
+	// that reads before it writes — which is what a sync pass and a reindex both
+	// do — starts as a reader and has to upgrade, and SQLite cannot make an
+	// upgrade wait: it fails the statement with SQLITE_BUSY immediately, without
+	// consulting busy_timeout. That is the "database is locked (5)" that killed a
+	// data source mid-sync on the board while the embedding workers were writing
+	// vectors. Taking the lock up front puts the second writer in the queue that
+	// busy_timeout is there to bound.
+	dsn := path + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_txlock=immediate&_time_format=sqlite"
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
