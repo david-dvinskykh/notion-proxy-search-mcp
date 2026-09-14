@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -211,7 +212,7 @@ func TestLongPageDoesNotOutrankBetterShortOne(t *testing.T) {
 		long = append(long, hit{pageID: "manual", chunkID: int64(100 + i), rank: 2 + i, score: 0.80})
 	}
 
-	out := fuse(nil, append(short, long...))
+	out := fuse(nil, append(short, long...), weightKeyword)
 	byPage := map[string]fusedHit{}
 	for _, f := range out {
 		byPage[f.pageID] = f
@@ -520,5 +521,53 @@ func TestBranchCandidatesAreDistinctPages(t *testing.T) {
 				t.Fatalf("the page that answers the question never reached fusion: got %v", seen)
 			}
 		})
+	}
+}
+
+func TestQueryCarriesLiteral(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		want  bool
+	}{
+		{"NPS_EMBED_SKIP_SOURCES", true},
+		{"кто такой @dmytro_pzu", true},
+		{"страховая стоимость машины AX6304IP", true},
+		{"что показывает sensor.pxmrfugs", true},
+		{"панель CLARA Optima", true},
+		{"какая премия по КАСКО и на какой срок оформлен полис", false},
+		{"что нужно для оформления турстраховки в ПЗУ", false},
+		{"сколько лет коту Бене и какой он породы", false},
+		{"аренда продлена до 08.07.2026", false},
+		{"сколько стоит 5350 PLN в месяц", false},
+		{"", false},
+	} {
+		if got := QueryCarriesLiteral(tc.query); got != tc.want {
+			t.Errorf("QueryCarriesLiteral(%q) = %v, want %v", tc.query, got, tc.want)
+		}
+	}
+}
+
+// A query that spells out an identifier should follow the branch that can match
+// it exactly. With one flat weight the vector branch outvoted a rank-one keyword
+// hit on a token embeddings have never seen.
+func TestLiteralQueryFollowsTheKeywordBranch(t *testing.T) {
+	// The identifier is the keyword branch's first hit and is absent from the
+	// vector branch entirely, which is what an embedding does with a token it
+	// has never seen. The vector branch offers prose instead, one rank down.
+	keyword := []hit{{pageID: "env-var", chunkID: 1, rank: 1, score: 12}}
+	vector := []hit{
+		{pageID: "prose-a", chunkID: 2, rank: 2, score: 0.81},
+		{pageID: "prose-b", chunkID: 3, rank: 3, score: 0.80},
+	}
+	first := func(weight float64) string {
+		out := fuse(keyword, vector, weight)
+		sort.SliceStable(out, func(i, j int) bool { return out[i].score > out[j].score })
+		return out[0].pageID
+	}
+	if got := first(keywordWeightFor("что такое NPS_EMBED_SKIP_SOURCES")); got != "env-var" {
+		t.Fatalf("literal query put %q first, want env-var", got)
+	}
+	if got := first(keywordWeightFor("где хранится зеркало и сколько оно весит")); got != "prose-a" {
+		t.Fatalf("prose query put %q first, want prose-a", got)
 	}
 }

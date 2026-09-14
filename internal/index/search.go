@@ -97,7 +97,79 @@ const rrfK = 60.0
 const (
 	weightVector  = 1.0
 	weightKeyword = 0.20
+	// weightKeywordLiteral is the weight for a query that carries an exact
+	// identifier — an environment variable, a handle, a dotted name, a code that
+	// mixes letters and digits. One weight cannot serve both kinds of question:
+	// at 0.20 the keyword branch put NPS_EMBED_SKIP_SOURCES and @dmytro_pzu
+	// first and was outvoted by embeddings that had no idea what either was,
+	// while raising the weight for everything cost the natural-language half.
+	// The query itself says which kind it is, so the weight follows the query.
+	//
+	// 1.0 means the branches are trusted equally when the user typed something
+	// exact — not that keyword wins. On the 27-question live set this is 19/27
+	// at rank one and 0.821 MRR against 18/27 and 0.803 flat, with the
+	// natural-language half untouched at 13/20 because the shape test does not
+	// fire on it. 1.5 measured better still (20/27, 0.840, 7/7 on identifiers),
+	// but the whole difference is one question, and it buys that question by
+	// asserting BM25 outranks the vector branch. Re-run the sweep on a larger
+	// set before going past parity.
+	weightKeywordLiteral = 1.0
 )
+
+// keywordWeightFor picks the fusion weight from the shape of the query.
+func keywordWeightFor(text string) float64 {
+	if QueryCarriesLiteral(text) {
+		return weightKeywordLiteral
+	}
+	return weightKeyword
+}
+
+// QueryCarriesLiteral reports whether a query contains a token that is an exact
+// identifier rather than a word: an environment variable, a handle, a dotted
+// name, a code mixing letters and digits, a Latin acronym.
+//
+// It deliberately looks only at shape and only at Latin script. A Cyrillic word
+// in capitals is emphasis or an abbreviation a reader would paraphrase (КАСКО,
+// ПЗУ); a Latin one is usually a name the mirror stores verbatim. A bare number
+// does not count either — dates, sums and page numbers are everywhere in prose,
+// and BM25 has no special claim on them.
+func QueryCarriesLiteral(text string) bool {
+	for _, word := range strings.Fields(text) {
+		token := strings.Trim(word, `«».,()?!:;"'`)
+		if len([]rune(token)) < 3 {
+			continue
+		}
+		if strings.ContainsAny(token, "_@") {
+			return true
+		}
+		var latin, digit, upper, lower bool
+		for _, r := range token {
+			switch {
+			case r >= 'A' && r <= 'Z':
+				latin, upper = true, true
+			case r >= 'a' && r <= 'z':
+				latin, lower = true, true
+			case unicode.IsDigit(r):
+				digit = true
+			}
+		}
+		if !latin {
+			continue
+		}
+		if digit {
+			// Škoda AX6304IP, sha-647cba5: letters and digits welded together.
+			return true
+		}
+		if strings.Contains(strings.TrimSuffix(token, "."), ".") {
+			// sensor.pxmrfugs, docker-compose.yml.
+			return true
+		}
+		if upper && !lower && len([]rune(token)) >= 4 {
+			return true
+		}
+	}
+	return false
+}
 
 // Candidate pool sizing. Both branches hand fusion a list of pages, so the
 // keyword branch has to read more chunks than the pages it is asked for.
@@ -142,7 +214,7 @@ func (s *Store) Search(ctx context.Context, q Query) ([]Result, error) {
 		}
 	}
 
-	fused := fuse(keyword, vector)
+	fused := fuse(keyword, vector, keywordWeightFor(q.Text))
 	sort.SliceStable(fused, func(i, j int) bool { return fused[i].score > fused[j].score })
 	if len(fused) > q.Limit {
 		fused = fused[:q.Limit]
@@ -188,7 +260,7 @@ type fusedHit struct {
 // fact that actually answers the question and stands first in the branch. That
 // is not hypothetical — it is what the mirror did on this workspace, where a
 // fact with vector rank 1 came back below a page whose best chunk was rank 15.
-func fuse(keyword, vector []hit) []fusedHit {
+func fuse(keyword, vector []hit, weightKeyword float64) []fusedHit {
 	byPage := map[string]*fusedHit{}
 	order := []string{}
 	apply := func(list []hit, isVector bool) {
