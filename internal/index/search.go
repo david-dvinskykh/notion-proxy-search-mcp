@@ -106,13 +106,21 @@ const (
 	// The query itself says which kind it is, so the weight follows the query.
 	//
 	// 1.0 means the branches are trusted equally when the user typed something
-	// exact — not that keyword wins. On the 27-question live set this is 19/27
-	// at rank one and 0.821 MRR against 18/27 and 0.803 flat, with the
-	// natural-language half untouched at 13/20 because the shape test does not
-	// fire on it. 1.5 measured better still (20/27, 0.840, 7/7 on identifiers),
-	// but the whole difference is one question, and it buys that question by
-	// asserting BM25 outranks the vector branch. Re-run the sweep on a larger
-	// set before going past parity.
+	// exact — not that keyword wins. Measured on the board over the 27-question
+	// live set: 20/27 at rank one and 0.840 MRR against 18/27 and 0.803 flat,
+	// with the natural-language half untouched at 13/20 because the shape test
+	// fires on four of the 27 questions and none of the misses is among them.
+	// The gain is accountable one by one: NPS_EMBED_SKIP_SOURCES and
+	// @dmytro_pzu, where BM25 ranked the answer first and embeddings that had
+	// never seen either token outvoted it, both moved to rank one.
+	//
+	// The offline sweep predicted only 19/27 here and wanted 1.5 for 0.840. The
+	// classifier fires identically in both, so that gap is not the rule: the
+	// mirror syncs continuously and the branch rankings moved between the
+	// snapshot the sweep replayed and the live run. Use the sweep to choose
+	// between schemes, not to quote absolute numbers, and confirm on the board.
+	// There is no case for going past parity — 1.0 already takes identifiers to
+	// 7/7.
 	weightKeywordLiteral = 1.0
 )
 
