@@ -57,6 +57,8 @@ func main() {
 		err = runConvert(args)
 	case "status":
 		err = runStatus(ctx, args)
+	case "eval":
+		err = runEval(ctx, args)
 	case "version":
 		fmt.Println(Version)
 	case "help", "-h", "--help":
@@ -79,6 +81,7 @@ func usage() {
   daemon     sync loops, embedding model and unix socket
   convert    quantize a Hugging Face checkpoint into a weight blob
   status     print mirror status
+  eval       measure retrieval quality against a file of known answers
 
 Environment:
   NOTION_TOKEN             internal integration secret (daemon only, required)
@@ -285,6 +288,60 @@ func runConvert(args []string) error {
 		PassagePrefix: *passagePrefix,
 		Logf:          func(format string, a ...any) { fmt.Fprintf(os.Stderr, format+"\n", a...) },
 	})
+}
+
+// runEval measures retrieval against a file of questions whose answers are
+// known. Ranking changes are otherwise judged by reading a handful of results
+// and believing oneself, which is how a page's score came to grow with its
+// length without anyone noticing.
+func runEval(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	casesPath := fs.String("cases", "", "JSON array of {\"q\": question, \"expect\": page id or URL}")
+	modes := fs.String("modes", "hybrid,vector,keyword", "comma-separated retrieval modes to compare")
+	limit := fs.Int("limit", 5, "results per query; ranks deeper than this count as a miss")
+	jsonOut := fs.Bool("json", false, "emit metrics as JSON instead of a table")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *casesPath == "" {
+		fs.Usage()
+		return errors.New("eval: -cases is required")
+	}
+	cases, err := index.LoadEvalCases(*casesPath)
+	if err != nil {
+		return err
+	}
+
+	cfg := config()
+	client := ipc.NewClient(cfg.SocketPath)
+	if !client.Available() {
+		return fmt.Errorf("eval needs the daemon for the vector branch, and none answers on %s", cfg.SocketPath)
+	}
+
+	var all []index.EvalMetrics
+	for _, mode := range strings.Split(*modes, ",") {
+		mode = strings.TrimSpace(mode)
+		if mode == "" {
+			continue
+		}
+		ranks := make([]int, 0, len(cases))
+		for _, c := range cases {
+			results, err := client.Search(ctx, index.Query{
+				Text: c.Question, Limit: *limit, Mode: index.Mode(mode),
+			})
+			if err != nil {
+				return fmt.Errorf("eval %s %q: %w", mode, c.Question, err)
+			}
+			ranks = append(ranks, index.RankOf(results, c.Expect))
+		}
+		all = append(all, index.Summarise(mode, ranks))
+	}
+	if *jsonOut {
+		return printJSON(all)
+	}
+	fmt.Print(index.FormatEval(all, cases))
+	return nil
 }
 
 // runStatus prints the mirror's state for a human.
