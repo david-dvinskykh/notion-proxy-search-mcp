@@ -92,6 +92,13 @@ const (
 	weightKeyword = 0.35
 )
 
+// Candidate pool sizing. Both branches hand fusion a list of pages, so the
+// keyword branch has to read more chunks than the pages it is asked for.
+const (
+	chunkOversample = 25
+	maxKeywordScan  = 5000
+)
+
 // Search runs the requested branches and fuses them.
 func (s *Store) Search(ctx context.Context, q Query) ([]Result, error) {
 	if q.Limit <= 0 {
@@ -237,7 +244,7 @@ func (s *Store) keywordHits(ctx context.Context, q Query) ([]hit, error) {
 		JOIN pages p ON p.id = c.page_id
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY score DESC LIMIT ?`
-	args = append(args, q.Candidates)
+	args = append(args, keywordScanDepth(q.Candidates))
 
 	rows, err := s.db.SQL().QueryContext(ctx, query, args...)
 	if err != nil {
@@ -250,10 +257,53 @@ func (s *Store) keywordHits(ctx context.Context, q Query) ([]hit, error) {
 		if err := rows.Scan(&h.chunkID, &h.pageID, &h.score); err != nil {
 			return nil, err
 		}
-		h.rank = len(out) + 1
 		out = append(out, h)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return topPages(out, q.Candidates), nil
+}
+
+// keywordScanDepth is how many chunks the BM25 query reads before the result is
+// collapsed to one row per page. It has to overshoot the page budget, because a
+// long page answers MATCH with one row per chunk and would otherwise fill the
+// whole window on its own; the cap keeps a query that matches half the mirror
+// from reading half the mirror.
+func keywordScanDepth(candidates int) int {
+	depth := candidates * chunkOversample
+	if depth > maxKeywordScan {
+		depth = maxKeywordScan
+	}
+	return depth
+}
+
+// topPages collapses a score-ordered chunk list to its best chunk per page and
+// ranks what is left by page, not by chunk.
+//
+// Ranking chunks is what made a single long page able to push everything else
+// out of a branch before fusion ever saw it: 40 candidate slots against a page
+// that owns 770 chunks is not a contest. Ranks handed to fusion are page ranks
+// from here on, so rank 3 means the third best page rather than the third best
+// paragraph of the first one.
+func topPages(hits []hit, limit int) []hit {
+	if limit <= 0 {
+		return nil
+	}
+	seen := make(map[string]bool, limit)
+	out := make([]hit, 0, limit)
+	for _, h := range hits {
+		if seen[h.pageID] {
+			continue
+		}
+		seen[h.pageID] = true
+		h.rank = len(out) + 1
+		out = append(out, h)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out
 }
 
 func appendFilters(where []string, args []any, q Query) ([]string, []any) {
@@ -326,13 +376,7 @@ func (s *Store) vectorHits(ctx context.Context, q Query) ([]hit, error) {
 	s.mu.RUnlock()
 
 	sort.Slice(scored, func(i, j int) bool { return scored[i].score > scored[j].score })
-	if len(scored) > q.Candidates {
-		scored = scored[:q.Candidates]
-	}
-	for i := range scored {
-		scored[i].rank = i + 1
-	}
-	return scored, nil
+	return topPages(scored, q.Candidates), nil
 }
 
 func setOf(values []string) map[string]bool {

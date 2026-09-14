@@ -458,3 +458,67 @@ func TestSkippedSourcesStayOutOfTheVectorIndex(t *testing.T) {
 		t.Fatalf("a skipped page must stay findable by keyword: %v", titlesOf(got))
 	}
 }
+
+// longPageMarkdown builds a page of n sections, each its own chunk, all of them
+// mentioning the query term once.
+func longPageMarkdown(n int, term string) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString("## Раздел ")
+		b.WriteString(strings.Repeat("I", i%7+1))
+		b.WriteString("\n")
+		b.WriteString("Здесь описан ")
+		b.WriteString(term)
+		b.WriteString(" в общем виде, без чисел и без конкретных значений.\n\n")
+	}
+	return b.String()
+}
+
+// A branch hands fusion a list of pages. One page with many chunks used to fill
+// the whole candidate window, so a page that answered the question never
+// reached fusion at all — not outranked, absent.
+func TestBranchCandidatesAreDistinctPages(t *testing.T) {
+	f := newFixture(t, conceptEmbedder{})
+	seedFacts(t, f)
+	f.addPage(t, "manual", "facts", "Руководство по теплице",
+		longPageMarkdown(60, "полив"), "", "2026-09-05T10:00:00.000Z")
+	f.embedAll(t)
+
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		hits  func(Query) ([]hit, error)
+		query Query
+	}{
+		{"keyword", func(q Query) ([]hit, error) { return f.store.keywordHits(ctx, q) },
+			Query{Text: "полив", Candidates: 3}},
+		{"vector", func(q Query) ([]hit, error) { return f.store.vectorHits(ctx, q) },
+			Query{Text: "полив теплицы", Candidates: 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hits, err := tc.hits(tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(hits) == 0 {
+				t.Fatal("branch returned nothing")
+			}
+			if len(hits) > tc.query.Candidates {
+				t.Fatalf("branch returned %d candidates, asked for %d", len(hits), tc.query.Candidates)
+			}
+			seen := map[string]bool{}
+			for i, h := range hits {
+				if seen[h.pageID] {
+					t.Fatalf("page %s appears twice in the candidate list", h.pageID)
+				}
+				seen[h.pageID] = true
+				if h.rank != i+1 {
+					t.Fatalf("candidate %d carries rank %d; ranks must number pages", i, h.rank)
+				}
+			}
+			if !seen["fact-water"] {
+				t.Fatalf("the page that answers the question never reached fusion: got %v", seen)
+			}
+		})
+	}
+}
